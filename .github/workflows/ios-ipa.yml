@@ -1,4 +1,4 @@
-name: Build iOS IPA (Final Version)
+name: Build iOS IPA (SDK Fix)
 
 on:
   workflow_dispatch:
@@ -29,9 +29,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          # 升级到较新的 stable 版本，以匹配最新的 hiddify 依赖要求
-          flutter-version: '3.27.3' 
-          channel: 'stable'
+          # 尝试切换到最新版本以获取 3.10+ 的 Dart SDK
+          channel: 'stable' 
           cache: true
 
       - name: Setup Go
@@ -46,17 +45,14 @@ jobs:
           targets: aarch64-apple-ios
 
       - name: Install System Dependencies
-        run: |
-          brew install make base64
+        run: brew install make base64
 
       - name: Flutter Pub Get
-        run: |
-          # 增加 --allow-dirty 或类似处理确保环境纯净
-          flutter pub get
+        run: flutter pub get
 
-      - name: Run Build Runner (CRITICAL FIX)
+      - name: Run Build Runner
         run: |
-          # 这一步修复你之前遇到的 state/ref 报错
+          # 生成 *.g.dart 文件
           flutter pub run build_runner build --delete-conflicting-outputs
 
       - name: Build Core Libraries
@@ -64,7 +60,6 @@ jobs:
 
       - name: Flutter Build iOS
         run: |
-          # 生成无签名包
           flutter build ios --release --no-codesign
 
       - name: Create IPA Package
@@ -72,11 +67,10 @@ jobs:
           mkdir -p build/ios/iphoneos/Payload
           cp -r build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
           cd build/ios/iphoneos
-          zip -r Hiddify_iOS_Build.ipa Payload
+          zip -r Hiddify_iOS.ipa Payload
           
-      - name: Upload IPA Artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Hiddify-IPA
-          path: build/ios/iphoneos/Hiddify_iOS_Build.ipa
-          retention-days: 7
+          path: build/ios/iphoneos/Hiddify_iOS.ipa
