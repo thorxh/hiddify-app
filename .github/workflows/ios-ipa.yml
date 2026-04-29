@@ -1,16 +1,74 @@
-- name: Fix Submodule Protocol & Recursive Sync
+name: Build iOS IPA (Unsigned)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14 # 使用 M1/M2 运行器，性能远超 intel 运行器
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: false # 必须为 false，由后面脚本接管递归逻辑
+
+      - name: Force HTTPS for All Submodules
         run: |
-          # 1. 这种方法最彻底：在 Git 层级直接拦截所有 SSH 请求并转为 HTTPS
-          # 不管嵌套多少层，只要 Git 尝试拉取 git@github.com，就会被转向 https
+          # 核心修复：直接在全局 Git 配置中拦截所有 SSH 协议并强制转为 HTTPS
+          # 这能穿透无限层级的子模块嵌套
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
           
-          # 2. 移除可能冲突的本地配置
-          git submodule deinit -f . || true
-          
-          # 3. 递归同步 URL（确保配置生效）
+          # 同步并递归更新，使用 --jobs 加速
           git submodule sync --recursive
-          
-          # 4. 递归拉取子模块
-          # --jobs 4 可以加快速度，--depth 1 减少流量，--recursive 处理所有层级
           git submodule update --init --recursive --depth 1 --jobs 4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install System Dependencies
+        run: |
+          brew install make base64
+          # 如果编译过程中提示缺少 yq 或 jq，可在此补充
+
+      - name: Get Flutter Packages
+        run: flutter pub get
+
+      - name: Build Core Libraries
+        run: |
+          # Hiddify 关键步骤：编译 Go 和 Rust 编写的内核
+          make ios-libs
+
+      - name: Flutter Build iOS
+        run: |
+          # 生成无签名的二进制文件包
+          flutter build ios --release --no-codesign
+
+      - name: Create IPA Package (For EasySign)
+        run: |
+          # 标准 IPA 结构打包逻辑
+          mkdir -p build/ios/iphoneos/Payload
+          cp -r build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
+          cd build/ios/iphoneos
+          zip -r Hiddify_iOS_Unsigned.ipa Payload
+          
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hiddify-IPA
+          path: build/ios/iphoneos/Hiddify_iOS_Unsigned.ipa
+          retention-days: 7
