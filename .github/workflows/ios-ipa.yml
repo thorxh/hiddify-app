@@ -1,22 +1,32 @@
 name: Build iOS IPA (Unsigned)
 
 on:
-  workflow_dispatch: # 支持手动点击运行
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-14 # 使用 Apple Silicon 运行器速度更快
+    runs-on: macos-14
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: false # 初始不拉取，后面手动处理协议
+          submodules: false # 必须先设为 false，我们要手动递归处理
 
-      - name: Fix Submodule Protocol
+      - name: Fix Submodule Protocol & Recursive Sync
         run: |
-          # 强制将 SSH 协议替换为 HTTPS 协议，修复权限拒绝问题
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          # 1. 处理第一层子模块：把 SSH 改为 HTTPS
+          sed -i '' 's|git@github.com:|https://github.com/|g' .gitmodules
+          sed -i '' 's|ssh://git@github.com/|https://github.com/|g' .gitmodules
+          git submodule update --init --depth 1
+
+          # 2. 递归处理嵌套子模块 (针对 hiddify-core 里的内容)
+          # 我们进入子模块文件夹，重复修改并更新的操作
+          find . -name ".gitmodules" -type f -exec sed -i '' 's|git@github.com:|https://github.com/|g' {} +
+          find . -name ".gitmodules" -type f -exec sed -i '' 's|ssh://git@github.com/|https://github.com/|g' {} +
+          
+          # 强制同步所有子模块的 URL 配置
+          git submodule sync --recursive
+          # 递归更新所有子模块
           git submodule update --init --recursive --depth 1
 
       - name: Setup Flutter
@@ -45,18 +55,15 @@ jobs:
 
       - name: Build Core Libraries
         run: |
-          # Hiddify 构建 iOS 必须先编译底层的 libcore
-          # 这一步通常调用 Makefile
+          # 如果之前步骤成功，这里就能正常编译 libcore
           make ios-libs
 
       - name: Flutter Build iOS
         run: |
-          # 构建 release 版本但不签名
           flutter build ios --release --no-codesign
 
       - name: Create IPA Package
         run: |
-          # 创建 Payload 文件夹并打包 IPA
           mkdir -p build/ios/iphoneos/Payload
           cp -r build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
           cd build/ios/iphoneos
@@ -67,4 +74,3 @@ jobs:
         with:
           name: Hiddify-IPA
           path: build/ios/iphoneos/Hiddify_iOS_Unsigned.ipa
-          retention-days: 7
