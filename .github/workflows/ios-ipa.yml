@@ -5,23 +5,39 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14 # 使用 M1/M2 运行器，性能远超 intel 运行器
+    runs-on: macos-14
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: false # 必须为 false，由后面脚本接管递归逻辑
+          submodules: false # 必须先禁用自动拉取
 
-      - name: Force HTTPS for All Submodules
+      - name: Hard-Fix All Submodule Protocols
         run: |
-          # 核心修复：直接在全局 Git 配置中拦截所有 SSH 协议并强制转为 HTTPS
-          # 这能穿透无限层级的子模块嵌套
+          # 1. 设置全局替换（作为第一道防线）
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git://github.com/"
+
+          # 2. 初始化第一层子模块并立即修改其内部配置
+          git submodule update --init --depth 1
           
-          # 同步并递归更新，使用 --jobs 加速
+          # 3. 递归寻找并暴力修改所有 .gitmodules 文件
+          # 这一步会进入 hiddify-core 等目录，将其中的 SSH 链接改为 HTTPS
+          find . -name ".gitmodules" -type f -exec sed -i '' 's|git@github.com:|https://github.com/|g' {} +
+          find . -name ".gitmodules" -type f -exec sed -i '' 's|ssh://git@github.com/|https://github.com/|g' {} +
+          
+          # 4. 强制同步配置到 .git/config
           git submodule sync --recursive
-          git submodule update --init --recursive --depth 1 --jobs 4
+          
+          # 5. 执行递归更新
+          # 如果此时还报错，说明嵌套层级在拉取过程中又产生了动态的 SSH 链接
+          # 我们增加一个“多级拉取”策略
+          git submodule update --init --recursive --depth 1 --jobs 4 || (
+            echo "First recursive update failed, retrying after syncing again..."
+            git submodule sync --recursive
+            git submodule update --init --recursive --depth 1 --jobs 4
+          )
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -41,34 +57,26 @@ jobs:
           targets: aarch64-apple-ios
 
       - name: Install System Dependencies
-        run: |
-          brew install make base64
-          # 如果编译过程中提示缺少 yq 或 jq，可在此补充
+        run: brew install make base64
 
       - name: Get Flutter Packages
         run: flutter pub get
 
       - name: Build Core Libraries
-        run: |
-          # Hiddify 关键步骤：编译 Go 和 Rust 编写的内核
-          make ios-libs
+        run: make ios-libs
 
       - name: Flutter Build iOS
-        run: |
-          # 生成无签名的二进制文件包
-          flutter build ios --release --no-codesign
+        run: flutter build ios --release --no-codesign
 
-      - name: Create IPA Package (For EasySign)
+      - name: Create IPA Package
         run: |
-          # 标准 IPA 结构打包逻辑
           mkdir -p build/ios/iphoneos/Payload
           cp -r build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
           cd build/ios/iphoneos
-          zip -r Hiddify_iOS_Unsigned.ipa Payload
+          zip -r Hiddify_Fixed_Protocol.ipa Payload
           
-      - name: Upload IPA Artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Hiddify-IPA
-          path: build/ios/iphoneos/Hiddify_iOS_Unsigned.ipa
-          retention-days: 7
+          path: build/ios/iphoneos/Hiddify_Fixed_Protocol.ipa
