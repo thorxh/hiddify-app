@@ -1,4 +1,4 @@
-name: Hiddify iOS Production Build
+name: Hiddify iOS Debug Build
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: 1. 证书与环境安装
+      - name: 1. 证书安装与身份校验
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
@@ -29,36 +29,31 @@ jobs:
           echo -n "$P12_BASE64" | base64 --decode > $CERT_PATH
           echo -n "$PROVISION_BASE64" | base64 --decode > $PP_PATH
 
-          # 精确提取描述文件名称 (Name)
-          # 使用更严谨的 grep 逻辑，只取 <key>Name</key> 下的一行
-          REAL_NAME=$(grep -aA1 "<key>Name</key>" $PP_PATH | grep "<string>" | sed -E 's/<\/?string>//g' | xargs)
-          echo "==== [CONFIRM] Profile Name is: $REAL_NAME ===="
-
-          # 创建钥匙串
           security create-keychain -p "actions_pwd" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "actions_pwd" $KEYCHAIN_PATH
 
-          # 导入 P12
           security import $CERT_PATH -k $KEYCHAIN_PATH -P "$P12_PASSWORD" -A -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "actions_pwd" $KEYCHAIN_PATH
+
+          # 校验：检查是否有有效的签名身份
+          echo "==== [DEBUG] 有效签名身份清单 ===="
+          security find-identity -v -p codesigning $KEYCHAIN_PATH
 
           # 安装描述文件
           UUID=$(grep -aA1 "UUID" $PP_PATH | grep -o "[-A-Z0-9]\{36\}")
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
-          
-          echo "==== [CONFIRM] Keychain Identity ===="
-          security find-identity -v -p codesigning $KEYCHAIN_PATH
+          echo "Installed Profile UUID: $UUID"
 
-      - name: 2. Flutter Build Archive
+      - name: 2. Flutter Build Archive (详细模式)
         run: |
           flutter pub get
-          flutter build ipa --release --no-codesign
+          # 开启 verbose 模式，如果编译失败能看到具体哪个文件报错
+          flutter build ipa --release --no-codesign --verbose
 
-      - name: 3. Export and Sign
+      - name: 3. 核心重签与导出 (捕获错误)
         env:
-          # 注意：这里的 Value 必须是 "irv95H"
           EXPORT_PLIST: |
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -82,14 +77,24 @@ jobs:
         run: |
           echo "$EXPORT_PLIST" > ExportOptions.plist
           
+          echo "==== [DEBUG] 开始导出 IPA ===="
+          # 使用 -verbose 开启详细日志，并将错误输出重定向
           xcodebuild -exportArchive \
             -archivePath build/ios/archive/Runner.xcarchive \
             -exportPath build/ios/signed_final \
             -exportOptionsPlist ExportOptions.plist \
-            -allowProvisioningUpdates
+            -allowProvisioningUpdates \
+            -verbose > xcodebuild_log.txt 2>&1 || {
+              echo "==== [CRITICAL ERROR] xcodebuild 失败，具体原因如下： ===="
+              tail -n 50 xcodebuild_log.txt
+              exit 1
+            }
 
-      - name: 4. Upload
+      - name: 4. Upload IPA or Logs
+        if: always() # 无论成功失败都上传，方便查看日志文件
         uses: actions/upload-artifact@v4
         with:
-          name: Hiddify-Ready
-          path: build/ios/signed_final/*.ipa
+          name: Build-Logs-And-Results
+          path: |
+            build/ios/signed_final/*.ipa
+            xcodebuild_log.txt
