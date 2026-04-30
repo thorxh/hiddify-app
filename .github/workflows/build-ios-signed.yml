@@ -1,4 +1,4 @@
-name: Hiddify iOS Production Build
+name: Hiddify iOS Debug & Build
 
 on:
   workflow_dispatch:
@@ -16,41 +16,52 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Install Apple Certificate
+      - name: 1. 证书与环境诊断
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
           PROVISION_BASE64: ${{ secrets.MOBILEPROVISION_BASE64 }}
         run: |
+          # 创建临时路径
           CERT_PATH=$RUNNER_TEMP/build_cert.p12
           PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
 
+          # 解码
           echo -n "$P12_BASE64" | base64 --decode > $CERT_PATH
           echo -n "$PROVISION_BASE64" | base64 --decode > $PP_PATH
 
-          security create-keychain -p "build_pwd" $KEYCHAIN_PATH
+          # --- 诊断日志开始 ---
+          echo "==== [DEBUG] 描述文件内容提取 ===="
+          echo "Name: $(grep -aA1 "Name" $PP_PATH | grep "<string>" | sed -E 's/<\/?string>//g' | xargs)"
+          echo "TeamID: $(grep -aA1 "com.apple.developer.team-identifier" $PP_PATH | grep "<string>" | sed -E 's/<\/?string>//g' | xargs)"
+          echo "AppID (Full): $(grep -aA1 "application-identifier" $PP_PATH | grep "<string>" | sed -E 's/<\/?string>//g' | xargs)"
+          # --- 诊断日志结束 ---
+
+          # 创建钥匙串
+          security create-keychain -p "actions_pwd" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "build_pwd" $KEYCHAIN_PATH
+          security unlock-keychain -p "actions_pwd" $KEYCHAIN_PATH
 
-          # 导入并授权
+          # 导入
           security import $CERT_PATH -k $KEYCHAIN_PATH -P "$P12_PASSWORD" -A -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "build_pwd" $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -s -k "actions_pwd" $KEYCHAIN_PATH
 
-          # 提取描述文件 UUID 并安装 
+          # 安装描述文件 (UUID 命名)
           UUID=$(grep -aA1 "UUID" $PP_PATH | grep -o "[-A-Z0-9]\{36\}")
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
-          echo "Profile Installed: $UUID"
+          
+          echo "==== [DEBUG] 钥匙串中的证书列表 ===="
+          security find-identity -v -p codesigning $KEYCHAIN_PATH
 
-      - name: Flutter Build Archive
+      - name: 2. Flutter Build Archive
         run: |
           flutter pub get
-          flutter build ipa --release --no-codesign
+          flutter build ipa --release --no-codesign --verbose
 
-      - name: Export and Sign IPA
+      - name: 3. Export and Sign
         env:
-          # provisioningProfiles 必须精确匹配描述文件中的 Name 
           EXPORT_PLIST: |
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -73,14 +84,16 @@ jobs:
             </plist>
         run: |
           echo "$EXPORT_PLIST" > ExportOptions.plist
+          
+          echo "==== [DEBUG] 开始执行 xcodebuild 导出 ===="
           xcodebuild -exportArchive \
             -archivePath build/ios/archive/Runner.xcarchive \
             -exportPath build/ios/signed_final \
             -exportOptionsPlist ExportOptions.plist \
-            -allowProvisioningUpdates
+            -allowProvisioningUpdates || { echo "xcodebuild 失败，请检查上方日志"; exit 1; }
 
-      - name: Upload IPA
+      - name: 4. Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Hiddify-Ready-To-Install
+          name: Hiddify-Signed
           path: build/ios/signed_final/*.ipa
