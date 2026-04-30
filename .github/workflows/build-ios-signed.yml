@@ -1,4 +1,4 @@
-name: Hiddify iOS Auto-Sign Fixed
+name: Hiddify iOS Build (Hardcoded UUID)
 
 on:
   workflow_dispatch:
@@ -16,43 +16,39 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: 1. 证书安装与环境配置
+      - name: 1. 证书与环境搭建 (固定 UUID)
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
           PROVISION_BASE64: ${{ secrets.MOBILEPROVISION_BASE64 }}
         run: |
-          # 1. 解码文件
+          # --- 手动填写的关键信息 ---
+          FIXED_UUID="a98b7f98-3d85-4150-9e63-02cd9aaa65f7"
+          
+          # 1. 路径准备
           CERT_PATH=$RUNNER_TEMP/build_cert.p12
           PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
 
+          # 2. 解码
           echo -n "$P12_BASE64" | base64 --decode > $CERT_PATH
           echo -n "$PROVISION_BASE64" | base64 --decode > $PP_PATH
 
-          # 2. 创建并解锁钥匙串
+          # 3. 钥匙串安全操作
           security create-keychain -p "actions_pwd" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "actions_pwd" $KEYCHAIN_PATH
 
-          # 3. 导入 P12 (强制返回成功)
+          # 4. 导入证书并授权 (忽略非致命警告)
           security import $CERT_PATH -k $KEYCHAIN_PATH -P "$P12_PASSWORD" -A -T /usr/bin/codesign || true
-          
-          # 4. 授权 (强制返回成功)
           security set-key-partition-list -S apple-tool:,apple: -s -k "actions_pwd" $KEYCHAIN_PATH || true
 
-          # 5. 安装描述文件 (增加容错逻辑)
-          # 使用 perl 替代 grep 以提高在 Actions 环境下的兼容性
-          UUID=$(grep -aA1 "UUID" $PP_PATH | grep -o "[-A-Z0-9]\{36\}" || echo "NOT_FOUND")
-          
-          if [ "$UUID" = "NOT_FOUND" ]; then
-            echo "错误：无法从描述文件中提取 UUID"
-            exit 1
-          fi
-
+          # 5. 安装描述文件 (直接重命名为系统要求的 UUID 格式)
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
-          echo "Success: Installed Profile $UUID"
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$FIXED_UUID.mobileprovision
+          
+          echo "Success: Profile installed with UUID $FIXED_UUID"
+          security find-identity -v -p codesigning $KEYCHAIN_PATH || true
 
       - name: 2. Flutter Build Archive
         run: |
@@ -84,19 +80,23 @@ jobs:
         run: |
           echo "$EXPORT_PLIST" > ExportOptions.plist
           
-          # 导出并捕获日志
+          # 执行导出并保存详细日志
           xcodebuild -exportArchive \
             -archivePath build/ios/archive/Runner.xcarchive \
             -exportPath build/ios/signed_final \
             -exportOptionsPlist ExportOptions.plist \
             -allowProvisioningUpdates \
-            -verbose > xcodebuild_log.txt 2>&1 || (tail -n 100 xcodebuild_log.txt && exit 1)
+            -verbose > xcodebuild_log.txt 2>&1 || {
+              echo "==== 签名导出失败，最后 100 行日志如下 ===="
+              tail -n 100 xcodebuild_log.txt
+              exit 1
+            }
 
-      - name: 4. 上传成品
+      - name: 4. 上传成品与日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Hiddify-Build-Package
+          name: Hiddify-IPA-and-Logs
           path: |
             build/ios/signed_final/*.ipa
             xcodebuild_log.txt
