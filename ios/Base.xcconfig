@@ -1,15 +1,8 @@
-//
-//  Base.xcconfig
-//  Runner
-//
-//  Created by GFWFighter on 7/24/1402 AP.
-//
-
-// 必须修改为描述文件指定的 ID 
+// 必须与描述文件中的 application-identifier 一致
 BASE_BUNDLE_IDENTIFIER=com.fcnwU.8bQIrhD
 
-// 插件 ID 必须是主 ID 加上后缀 
+// 插件 ID 必须以主 ID 为前缀
 SERVICE_IDENTIFIER=com.fcnwU.8bQIrhD.HiddifyPacketTunnel
 
-// 必须修改为描述文件中的 Team ID: 9HT574YRU9 
+// 必须改为描述文件中的 Team ID 
 DEVELOPMENT_TEAM=9HT574YRU9
