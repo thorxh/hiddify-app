@@ -5,6 +5,11 @@
 //  Created by GFWFighter on 7/24/1402 AP.
 //
 
-BASE_BUNDLE_IDENTIFIER=apple.hiddify.com
-SERVICE_IDENTIFIER=com.hiddify.app
-DEVELOPMENT_TEAM=3JFTY5BP58
+// 必须修改为描述文件指定的 ID 
+BASE_BUNDLE_IDENTIFIER=com.fcnwU.8bQIrhD
+
+// 插件 ID 必须是主 ID 加上后缀 
+SERVICE_IDENTIFIER=com.fcnwU.8bQIrhD.HiddifyPacketTunnel
+
+// 必须修改为描述文件中的 Team ID: 9HT574YRU9 
+DEVELOPMENT_TEAM=9HT574YRU9
