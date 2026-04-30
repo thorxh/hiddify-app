@@ -1,4 +1,4 @@
-name: Hiddify iOS Auto-Sign Final
+name: Hiddify iOS Auto-Sign Final Force
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: 1. 证书安装与权限授权
+      - name: 1. 证书安装 (强制跳过警告)
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
@@ -33,27 +33,35 @@ jobs:
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "actions_pwd" $KEYCHAIN_PATH
 
-          # 导入 P12
-          security import $CERT_PATH -k $KEYCHAIN_PATH -P "$P12_PASSWORD" -A -T /usr/bin/codesign
+          echo -n "# 导入 P12，加上 || true"
+
+          # 导入 P12，加上 || true
+          security import $CERT_PATH -k $KEYCHAIN_PATH -P "$P12_PASSWORD" -A -T /usr/bin/codesign || true
           
-          # 关键：静默授权，忽略可能的错误
+          echo -n "# 关键：静默授权，忽略一切警告"
+
+          # 关键：静默授权，忽略一切警告
           security set-key-partition-list -S apple-tool:,apple: -s -k "actions_pwd" $KEYCHAIN_PATH || true
 
-          # 安装描述文件 (使用 UUID 命名)
+
+          echo -n "# 安装描述文件 (UUID 命名)"
+
+          # 安装描述文件 (UUID 命名)
           UUID=$(grep -aA1 "UUID" $PP_PATH | grep -o "[-A-Z0-9]\{36\}")
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
           
-          echo "==== [DEBUG] 身份校验 (如果下方显示 1 valid 即可继续) ===="
+          echo -n "# 仅作为日志打印，即便失败也不中断任务"
+
+          # 仅作为日志打印，即便失败也不中断任务
           security find-identity -v -p codesigning $KEYCHAIN_PATH || true
 
-      - name: 2. Flutter Build Archive
+      - name: 2. Flutter Build (无签名模式)
         run: |
           flutter pub get
-          # 这一步只编译不签名
           flutter build ipa --release --no-codesign
 
-      - name: 3. Xcode 导出与递归签名
+      - name: 3. Xcode 签名与导出 (错误深度排查)
         env:
           EXPORT_PLIST: |
             <?xml version="1.0" encoding="UTF-8"?>
@@ -78,15 +86,19 @@ jobs:
         run: |
           echo "$EXPORT_PLIST" > ExportOptions.plist
           
-          # 执行导出，如果失败会打印最后 50 行错误日志
+          # 如果导出失败，将打印最后 100 行详细日志
           xcodebuild -exportArchive \
             -archivePath build/ios/archive/Runner.xcarchive \
             -exportPath build/ios/signed_final \
             -exportOptionsPlist ExportOptions.plist \
-            -allowProvisioningUpdates || (echo "==== 导出失败日志 ====" && xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive -exportPath build/ios/signed_final -exportOptionsPlist ExportOptions.plist -allowProvisioningUpdates -verbose | tail -n 50 && exit 1)
+            -allowProvisioningUpdates \
+            -verbose > xcodebuild_log.txt 2>&1 || (tail -n 100 xcodebuild_log.txt && exit 1)
 
-      - name: 4. 上传成品
+      - name: 4. 上传
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Hiddify-Final-IPA
-          path: build/ios/signed_final/*.ipa
+          name: Hiddify-Build-Results
+          path: |
+            build/ios/signed_final/*.ipa
+            xcodebuild_log.txt
