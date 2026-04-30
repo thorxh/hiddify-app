@@ -1,4 +1,4 @@
-name: Hiddify iOS Build (Hardcoded UUID)
+name: Hiddify iOS Full Build & Sign
 
 on:
   workflow_dispatch:
@@ -6,56 +6,71 @@ on:
 jobs:
   build:
     runs-on: macos-14
-    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          submodules: true # 开启子模块
 
+      # --- 1. 环境准备 (Go/Rust/Flutter) ---
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          cache: true
 
-      - name: 1. 证书与环境搭建 (固定 UUID)
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      # --- 2. 证书安装 (固定 UUID 版) ---
+      - name: Install Certificates
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
           PROVISION_BASE64: ${{ secrets.MOBILEPROVISION_BASE64 }}
         run: |
-          # --- 手动填写的关键信息 ---
           FIXED_UUID="a98b7f98-3d85-4150-9e63-02cd9aaa65f7"
-          
-          # 1. 路径准备
           CERT_PATH=$RUNNER_TEMP/build_cert.p12
           PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
 
-          # 2. 解码
           echo -n "$P12_BASE64" | base64 --decode > $CERT_PATH
           echo -n "$PROVISION_BASE64" | base64 --decode > $PP_PATH
 
-          # 3. 钥匙串安全操作
           security create-keychain -p "actions_pwd" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "actions_pwd" $KEYCHAIN_PATH
-
-          # 4. 导入证书并授权 (忽略非致命警告)
           security import $CERT_PATH -k $KEYCHAIN_PATH -P "$P12_PASSWORD" -A -T /usr/bin/codesign || true
           security set-key-partition-list -S apple-tool:,apple: -s -k "actions_pwd" $KEYCHAIN_PATH || true
 
-          # 5. 安装描述文件 (直接重命名为系统要求的 UUID 格式)
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$FIXED_UUID.mobileprovision
-          
-          echo "Success: Profile installed with UUID $FIXED_UUID"
-          security find-identity -v -p codesigning $KEYCHAIN_PATH || true
 
-      - name: 2. Flutter Build Archive
+      # --- 3. 核心库编译 (解决 HiddifyCore 缺失问题) ---
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Runner
+        run: flutter pub run build_runner build --delete-conflicting-outputs
+
+      - name: Build Hiddify Core
+        run: make ios-libs # 这一步生成 HiddifyCore.xcframework
+
+      # --- 4. 编译与签名 ---
+      - name: Flutter Build Archive
         run: |
-          flutter pub get
-          flutter build ipa --release --no-codesign
+          # 必须先执行 build ios 生成 Xcode 工程配置，但不直接签名
+          flutter build ios --release --no-codesign
 
-      - name: 3. Xcode 签名与导出
+      - name: Xcode Export IPA
         env:
           EXPORT_PLIST: |
             <?xml version="1.0" encoding="UTF-8"?>
@@ -80,23 +95,28 @@ jobs:
         run: |
           echo "$EXPORT_PLIST" > ExportOptions.plist
           
-          # 执行导出并保存详细日志
-          xcodebuild -exportArchive \
-            -archivePath build/ios/archive/Runner.xcarchive \
-            -exportPath build/ios/signed_final \
-            -exportOptionsPlist ExportOptions.plist \
-            -allowProvisioningUpdates \
-            -verbose > xcodebuild_log.txt 2>&1 || {
-              echo "==== 签名导出失败，最后 100 行日志如下 ===="
-              tail -n 100 xcodebuild_log.txt
-              exit 1
-            }
+          # 使用 xcodebuild 进行正规签名打包
+          # 注意：Runner.xcarchive 通常在 build/ios/archive 下
+          # 如果没有该目录，我们需要先 archive
+          xcodebuild -workspace ios/Runner.xcworkspace \
+                     -scheme Runner \
+                     -sdk iphoneos \
+                     -configuration Release \
+                     -archivePath build/ios/archive/Runner.xcarchive \
+                     archive \
+                     CODE_SIGN_STYLE=Manual \
+                     DEVELOPMENT_TEAM=9HT574YRU9 \
+                     PROVISIONING_PROFILE_SPECIFIER=irv95H
 
-      - name: 4. 上传成品与日志
+          xcodebuild -exportArchive \
+                     -archivePath build/ios/archive/Runner.xcarchive \
+                     -exportPath build/ios/signed_final \
+                     -exportOptionsPlist ExportOptions.plist \
+                     -allowProvisioningUpdates
+
+      - name: Upload Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Hiddify-IPA-and-Logs
-          path: |
-            build/ios/signed_final/*.ipa
-            xcodebuild_log.txt
+          name: Hiddify-Signed-IPA
+          path: build/ios/signed_final/*.ipa
