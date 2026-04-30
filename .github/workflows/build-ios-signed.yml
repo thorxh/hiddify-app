@@ -1,4 +1,4 @@
-name: Hiddify iOS Full Build & Sign
+name: Build iOS IPA (Signed)
 
 on:
   workflow_dispatch:
@@ -10,13 +10,26 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: true # 开启子模块
+          submodules: false
 
-      # --- 1. 环境准备 (Go/Rust/Flutter) ---
+      - name: Setup SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add GitHub to Known Hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Recursive Submodule Update
+        run: |
+          git submodule update --init --recursive --depth 1 --jobs 4
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          channel: 'stable' 
           cache: true
 
       - name: Setup Go
@@ -30,8 +43,11 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
-      # --- 2. 证书安装 (固定 UUID 版) ---
-      - name: Install Certificates
+      - name: Install System Dependencies
+        run: brew install make base64
+
+      # --- 关键：在此处插入证书安装逻辑 ---
+      - name: Setup Signing Identity
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
@@ -54,23 +70,34 @@ jobs:
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$FIXED_UUID.mobileprovision
 
-      # --- 3. 核心库编译 (解决 HiddifyCore 缺失问题) ---
-      - name: Install Dependencies
+      - name: Flutter Pub Get
         run: flutter pub get
 
-      - name: Build Runner
-        run: flutter pub run build_runner build --delete-conflicting-outputs
+      - name: Run Build Runner
+        run: |
+          flutter pub run build_runner build --delete-conflicting-outputs
 
-      - name: Build Hiddify Core
-        run: make ios-libs # 这一步生成 HiddifyCore.xcframework
+      - name: Build Core Libraries
+        run: make ios-libs
 
-      # --- 4. 编译与签名 ---
+      # --- 关键修改：执行 Archive 流程 ---
       - name: Flutter Build Archive
         run: |
-          # 必须先执行 build ios 生成 Xcode 工程配置，但不直接签名
+          # 使用 --no-codesign 准备 Xcode 项目，但通过命令行参数强制注入签名配置进行 Archive
           flutter build ios --release --no-codesign
+          
+          xcodebuild -workspace ios/Runner.xcworkspace \
+                     -scheme Runner \
+                     -sdk iphoneos \
+                     -configuration Release \
+                     -archivePath build/ios/archive/Runner.xcarchive \
+                     archive \
+                     CODE_SIGN_STYLE=Manual \
+                     DEVELOPMENT_TEAM=9HT574YRU9 \
+                     PROVISIONING_PROFILE_SPECIFIER=irv95H
 
-      - name: Xcode Export IPA
+      # --- 关键修改：使用 ExportOptions 导出正式 IPA ---
+      - name: Create Signed IPA Package
         env:
           EXPORT_PLIST: |
             <?xml version="1.0" encoding="UTF-8"?>
@@ -94,28 +121,13 @@ jobs:
             </plist>
         run: |
           echo "$EXPORT_PLIST" > ExportOptions.plist
-          
-          # 使用 xcodebuild 进行正规签名打包
-          # 注意：Runner.xcarchive 通常在 build/ios/archive 下
-          # 如果没有该目录，我们需要先 archive
-          xcodebuild -workspace ios/Runner.xcworkspace \
-                     -scheme Runner \
-                     -sdk iphoneos \
-                     -configuration Release \
-                     -archivePath build/ios/archive/Runner.xcarchive \
-                     archive \
-                     CODE_SIGN_STYLE=Manual \
-                     DEVELOPMENT_TEAM=9HT574YRU9 \
-                     PROVISIONING_PROFILE_SPECIFIER=irv95H
-
           xcodebuild -exportArchive \
                      -archivePath build/ios/archive/Runner.xcarchive \
                      -exportPath build/ios/signed_final \
                      -exportOptionsPlist ExportOptions.plist \
                      -allowProvisioningUpdates
 
-      - name: Upload Artifact
-        if: always()
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Hiddify-Signed-IPA
