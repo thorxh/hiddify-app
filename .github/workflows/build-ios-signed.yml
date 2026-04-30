@@ -1,10 +1,10 @@
-name: Hiddify iOS Auto-Sign (Final Fix)
+name: Hiddify iOS Production Build
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-and-sign:
+  build:
     runs-on: macos-14
     
     steps:
@@ -29,26 +29,28 @@ jobs:
           echo -n "$P12_BASE64" | base64 --decode > $CERT_PATH
           echo -n "$PROVISION_BASE64" | base64 --decode > $PP_PATH
 
-          security create-keychain -p "actions_pwd" $KEYCHAIN_PATH
+          security create-keychain -p "build_pwd" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "actions_pwd" $KEYCHAIN_PATH
+          security unlock-keychain -p "build_pwd" $KEYCHAIN_PATH
 
+          # 导入并授权
           security import $CERT_PATH -k $KEYCHAIN_PATH -P "$P12_PASSWORD" -A -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "actions_pwd" $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -s -k "build_pwd" $KEYCHAIN_PATH
 
-          # 自动提取 UUID
+          # 提取描述文件 UUID 并安装 
           UUID=$(grep -aA1 "UUID" $PP_PATH | grep -o "[-A-Z0-9]\{36\}")
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
-          echo "Successfully installed profile: $UUID"
+          echo "Profile Installed: $UUID"
 
-      - name: Flutter Build
+      - name: Flutter Build Archive
         run: |
           flutter pub get
           flutter build ipa --release --no-codesign
 
       - name: Export and Sign IPA
         env:
+          # provisioningProfiles 必须精确匹配描述文件中的 Name 
           EXPORT_PLIST: |
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -80,5 +82,5 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Hiddify-Fixed-IPA
+          name: Hiddify-Ready-To-Install
           path: build/ios/signed_final/*.ipa
