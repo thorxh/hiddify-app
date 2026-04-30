@@ -1,11 +1,11 @@
-name: Hiddify iOS Auto Sign (macOS-14)
+name: Hiddify iOS Auto-Sign (Final)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: macos-14
+  build-and-sign:
+    runs-on: macos-14 # 使用 Apple Silicon 虚拟机提升速度
     
     steps:
       - name: Checkout Code
@@ -26,19 +26,22 @@ jobs:
           PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
 
+          # 解码 Secret 到临时文件
           echo -n "$P12_BASE64" | base64 --decode > $CERT_PATH
           echo -n "$PROVISION_BASE64" | base64 --decode > $PP_PATH
 
-          security create-keychain -p "actions_pass" $KEYCHAIN_PATH
+          # 创建并解锁钥匙串
+          security create-keychain -p "github_action_pwd" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "actions_pass" $KEYCHAIN_PATH
+          security unlock-keychain -p "github_action_pwd" $KEYCHAIN_PATH
 
+          # 导入 P12 并授权 codesign
           security import $CERT_PATH -k $KEYCHAIN_PATH -P "$P12_PASSWORD" -A -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "actions_pass" $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -s -k "github_action_pwd" $KEYCHAIN_PATH
 
-          # 提取 UUID
+          # 提取 UUID 并安装描述文件
           UUID=$(grep -aA1 "UUID" $PP_PATH | grep -o "[-A-Z0-9]\{36\}")
-          echo "UUID Found: $UUID"
+          echo "Success: Provisioning Profile UUID is $UUID"
           
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
@@ -46,10 +49,12 @@ jobs:
       - name: Flutter Build Archive
         run: |
           flutter pub get
+          # 先构建 Archive，no-codesign 确保这一步不因权限报错
           flutter build ipa --release --no-codesign
 
       - name: Export and Sign IPA
         env:
+          # 此处使用您确认的 Name: irv95H
           EXPORT_PLIST: |
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,8 +66,8 @@ jobs:
               <string>manual</string>
               <key>provisioningProfiles</key>
               <dict>
-                "apple.hiddify.com": "SZ4OJoJK irv95H Hongna Wang"
-                "apple.hiddify.com.HiddifyPacketTunnel": "SZ4OJoJK irv95H Hongna Wang"
+                "apple.hiddify.com": "irv95H"
+                "apple.hiddify.com.HiddifyPacketTunnel": "irv95H"
               </dict>
               <key>manageAppVersionAndBuildNumber</key>
               <true/>
@@ -72,14 +77,16 @@ jobs:
             </plist>
         run: |
           echo "$EXPORT_PLIST" > ExportOptions.plist
+          
+          # xcodebuild 会自动完成递归签名，包括 Frameworks 文件夹
           xcodebuild -exportArchive \
             -archivePath build/ios/archive/Runner.xcarchive \
-            -exportPath build/ios/signed_output \
+            -exportPath build/ios/signed_final \
             -exportOptionsPlist ExportOptions.plist \
             -allowProvisioningUpdates
 
-      - name: Upload Artifact
+      - name: Upload Signed IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Hiddify-Signed-IPA
-          path: build/ios/signed_output/*.ipa
+          name: Hiddify-Ultra-Signed
+          path: build/ios/signed_final/*.ipa
