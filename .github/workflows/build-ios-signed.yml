@@ -48,7 +48,11 @@ jobs:
 
           # 安装描述文件 (UUID 命名)
           UUID=$(grep -aA1 "UUID" $PP_PATH | grep -o "[-A-Z0-9]\{36\}")
+
+          echo -n "mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles"
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+
+          echo -n "cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision"
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
           
           echo -n "# 仅作为日志打印，即便失败也不中断任务"
